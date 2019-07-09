@@ -2,7 +2,6 @@ package ccache
 
 import (
 	"bytes"
-	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -40,9 +39,6 @@ func (b *Handler) fetchItem(key string) *Item {
 			if b.CacheItems[index].HasExpired() {
 				continue
 			}
-			b.CacheItems[index].Hits++
-			b.CacheItems[index].LastHit = time.Now()
-			b.CacheItems[index].LogAction("fetch", fmt.Sprintf("COUNT = %d", b.CacheItems[index].Hits))
 			return &b.CacheItems[index]
 		}
 	}
@@ -58,6 +54,57 @@ func (b *Handler) Fetch(r *http.Request) *Item {
 	}
 	// fallback to public key
 	return b.fetchItem(PublicKeyFromRequest(r, &b.Config))
+}
+
+// Store - store response if cachable
+func (b *Handler) Store(resp *http.Response) (*Item, error) {
+	// only cache certain request/response types
+	if resp.Request.Method != "GET" || resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, nil
+	}
+	// parse cache control header
+	cacheControl, err := cacheobject.ParseResponseCacheControl(resp.Header.Get("Cache-Control"))
+	if err != nil {
+		return nil, err
+	}
+	// no cache
+	if cacheControl.NoCachePresent || cacheControl.NoStore {
+		return nil, nil
+	}
+	// configured to not cache private responses
+	if cacheControl.PrivatePresent && !b.Config.CachePrivate {
+		return nil, nil
+	}
+	// too large to cache
+	if resp.ContentLength > int64(b.Config.ResponseMaxSize) {
+		return nil, nil
+	}
+	// check max age, if zero, don't cache
+	cacheMaxAge := int32(cacheControl.MaxAge)
+	if cacheControl.SMaxAge > 0 {
+		cacheMaxAge = int32(cacheControl.SMaxAge)
+	}
+	if cacheMaxAge == 0 {
+		return nil, nil
+	}
+	// already exists?
+	cacheItem := b.Fetch(resp.Request)
+	if cacheItem != nil {
+		return cacheItem, nil
+	}
+	// create cache item
+	newCacheItem, err := ItemFromResponse(resp, &b.Config)
+	if err != nil {
+		return nil, err
+	}
+	// set max age
+	newCacheItem.MaxAge = cacheMaxAge
+	// store cache item
+	b.CacheItems = append(b.CacheItems, newCacheItem)
+	if err != nil {
+		return nil, err
+	}
+	return &b.CacheItems[len(b.CacheItems)-1], nil
 }
 
 // clearItemIndex - clear a cache item from its index
@@ -160,8 +207,13 @@ func (b *Handler) Invalidate(r *http.Request) {
 	}
 }
 
-// OnRequest - called prior to making a request to app
-func (b *Handler) OnRequest(r *http.Request) (*http.Response, error) {
+// HandleRequest - called prior to making a request to app
+func (b *Handler) HandleRequest(r *http.Request) (*http.Response, error) {
+	// add header to request for ESI
+	if b.Config.UseESI {
+		r.Header.Add("Surrogate-Capability", "content=ESI/1.0")
+	}
+	// handle request
 	switch r.Method {
 	case "BAN", "PURGE":
 		{
@@ -205,68 +257,13 @@ func (b *Handler) OnRequest(r *http.Request) (*http.Response, error) {
 	return nil, nil
 }
 
-// getESIResponse - Get cache item response with ESI tags expanded
-func (b *Handler) getESIResponse(item *Item, subResps []*http.Response) (*http.Response, error) {
+// GetESIResponse - Get cache item response with ESI tags expanded
+func (b *Handler) GetESIResponse(item *Item, subResps []*http.Response) (*http.Response, error) {
 	resp, err := item.GetResponse()
 	if err != nil {
 		return nil, err
 	}
 	return ExpandESI(resp, item.EsiTags, subResps, b)
-}
-
-// OnResponse - called when response is returned from app
-func (b *Handler) OnResponse(r *http.Response, subResps []*http.Response) (*http.Response, error) {
-	// only cache certain request/response types
-	if r.Request.Method != "GET" || r.StatusCode < 200 || r.StatusCode > 299 {
-		return r, nil
-	}
-	// parse cache control header
-	cacheControl, err := cacheobject.ParseResponseCacheControl(r.Header.Get("Cache-Control"))
-	if err != nil {
-		return nil, err
-	}
-	// no cache
-	if cacheControl.NoCachePresent || cacheControl.NoStore {
-		return r, nil
-	}
-	// configured to not cache private responses
-	if cacheControl.PrivatePresent && !b.Config.CachePrivate {
-		return r, nil
-	}
-	// too large to cache
-	if r.ContentLength > int64(b.Config.ResponseMaxSize) {
-		return r, nil
-	}
-	// check max age, if zero, don't cache
-	cacheMaxAge := int32(cacheControl.MaxAge)
-	if cacheControl.SMaxAge > 0 {
-		cacheMaxAge = int32(cacheControl.SMaxAge)
-	}
-	if cacheMaxAge == 0 {
-		return r, nil
-	}
-	// already exists?
-	cacheItem := b.Fetch(r.Request)
-	if cacheItem != nil {
-		return b.getESIResponse(cacheItem, subResps)
-	}
-	// create cache item
-	newCacheItem, err := ItemFromResponse(r, &b.Config)
-	if err != nil {
-		return nil, err
-	}
-	// set max age
-	newCacheItem.MaxAge = cacheMaxAge
-	// store cache item
-	b.CacheItems = append(b.CacheItems, newCacheItem)
-	newResp, err := b.getESIResponse(&newCacheItem, subResps)
-	if err != nil {
-		return nil, err
-	}
-	// add cache miss header
-	newResp.Header.Set("X-Cache", "MISS")
-	newResp.Header.Set("X-Cache-Count", "0")
-	return newResp, nil
 }
 
 // Clear - clear all cache items

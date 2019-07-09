@@ -152,8 +152,17 @@ func (i *Item) GetResponse() (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	resp.Header.Set("X-Cache", "HIT")
-	resp.Header.Set("X-Cache-Count", strconv.Itoa(i.Hits))
+	// update cache hit count
+	if i.Hits == 0 {
+		resp.Header.Set("X-Cache", "MISS")
+		resp.Header.Set("X-Cache-Count", "0")
+	} else {
+		resp.Header.Set("X-Cache", "HIT")
+		resp.Header.Set("X-Cache-Count", strconv.Itoa(i.Hits))
+	}
+	i.LogAction("fetch", fmt.Sprintf("COUNT = %d", i.Hits))
+	i.LastHit = time.Now()
+	i.Hits++
 	return resp, nil
 }
 
