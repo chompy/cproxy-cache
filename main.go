@@ -8,71 +8,31 @@ import (
 )
 
 // cacheHandler - cache handler
-var cacheHandler *ccache.Handler
+var cacheHandler ccache.Handler
 
-// OnLoad - extension load
-func OnLoad() error {
+// OnLoad - load the extension
+func OnLoad(subRequestCallback func(*http.Request) (*http.Response, error)) error {
 	log.Printf("CACHE :: Init CCache v%.2f", ccache.VersionNo/100.0)
 	config := ccache.GetDefaultConfig()
-	cacheHandler = ccache.NewHandler(config)
+	cacheHandler = ccache.NewHandler(config, subRequestCallback)
 	return nil
 }
 
-// OnUnload - extension unload
-func OnUnload() error {
+// OnUnload - unload extension
+func OnUnload() {
 	cacheHandler.Clear()
-	return nil
 }
 
-// OnRequest - recieve request from cproxy
-func OnRequest(request *http.Request) (*http.Response, error) {
-	return cacheHandler.HandleRequest(request)
+// OnRequest - request event
+func OnRequest(req *http.Request) (*http.Response, error) {
+	log.Println("CACHE :: OnRequest")
+	return cacheHandler.OnRequest(req)
 }
 
-// OnCollectSubRequests - recieve response from cproxy so that sub requests can be determined
-func OnCollectSubRequests(resp *http.Response) ([]*http.Request, error) {
-	// must have request with response
-	if resp.Request == nil {
-		return nil, nil
-	}
-	// fetch esi tags
-	cacheItem := cacheHandler.Fetch(resp.Request)
-	if cacheItem == nil {
-		var err error
-		// store response so esi tag can be processed
-		cacheItem, err = cacheHandler.Store(resp)
-		if err != nil {
-			return nil, err
-		}
-		if cacheItem == nil {
-			return nil, nil
-		}
-	}
-	// create esi requests
-	esiReqs := make([]*http.Request, 0)
-	for _, esiTag := range cacheItem.EsiTags {
-		esiReq, err := http.NewRequest(
-			http.MethodGet,
-			resp.Request.URL.Scheme+"://"+resp.Request.URL.Host+esiTag.URL,
-			nil,
-		)
-		if err != nil {
-			return nil, err
-		}
-		esiReq = esiReq.WithContext(resp.Request.Context())
-		esiReq.Header = resp.Request.Header
-		esiReqs = append(esiReqs, esiReq)
-	}
-	return esiReqs, nil
-}
-
-// OnResponse - recieve response from cproxy
-func OnResponse(resp *http.Response, subResps []*http.Response) (*http.Response, error) {
-	cacheItem := cacheHandler.Fetch(resp.Request)
-	if cacheItem == nil {
-		return resp, nil
-	}
-	return cacheHandler.GetESIResponse(cacheItem, subResps)
+// OnResponse - response event
+func OnResponse(resp *http.Response) (*http.Response, error) {
+	log.Println("CACHE :: OnResponse")
+	return cacheHandler.OnResponse(resp)
 }
 
 // not used

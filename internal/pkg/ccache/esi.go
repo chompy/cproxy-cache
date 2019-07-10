@@ -6,35 +6,33 @@ import (
 	"regexp"
 )
 
-// EsiTag - data on esi tag
-type EsiTag struct {
-	URL      string
-	Position int
-}
-
 // esiTagRegex - Regex for esi tag
 const esiTagRegex = "<esi:include.*src=\\\"(.*)\\\".*>"
 
-// ParseESI - take http response and parse out esi tags
-func ParseESI(r *http.Response) (*http.Response, []EsiTag, error) {
+// ExpandESI - take http response and replace esi tags
+func ExpandESI(resp *http.Response, subRequestCallback func(req *http.Request) (*http.Response, error)) (*http.Response, error) {
+	// must have request attached to response
+	if resp.Request == nil {
+		return resp, nil
+	}
 	// compile regex
 	regex, err := regexp.Compile(esiTagRegex)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	// read response
-	respBytes, err := HTTPResponseToBytes(r)
+	respBytes, err := HTTPResponseToBytes(resp)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	// match regex
 	matches := regex.FindAllIndex(respBytes, -1)
-	// itterate matches and create list of tags
-	esiTagData := make([]EsiTag, 0)
+	// itterate matches and process esi request
 	posOffset := 0
 	for _, match := range matches {
+
 		// extract url
-		attrMatches := regex.FindAllSubmatch(respBytes[match[0]-posOffset:match[1]], -1)
+		attrMatches := regex.FindAllSubmatch(respBytes[match[0]+posOffset:match[1]+posOffset], -1)
 		if len(attrMatches) < 1 || len(attrMatches[0]) < 2 {
 			continue
 		}
@@ -42,46 +40,48 @@ func ParseESI(r *http.Response) (*http.Response, []EsiTag, error) {
 		if urlAttr == "" {
 			continue
 		}
-		// remove tag from response
-		lenBefore := len(respBytes)
-		respBytes = append(respBytes[:match[0]-posOffset], respBytes[match[1]+1-posOffset:]...)
-		// add tag data
-		esiTagData = append(
-			esiTagData,
-			EsiTag{
-				URL:      urlAttr,
-				Position: match[0] - posOffset,
-			},
-		)
-		posOffset += lenBefore - len(respBytes)
-	}
-	// create new output response
-	outputResp, err := HTTPResponseFromBytes(respBytes)
-	return outputResp, esiTagData, err
-}
 
-// ExpandESI - expand given esi tags in to response
-func ExpandESI(r *http.Response, esiTags []EsiTag, subResps []*http.Response, cacheHandler *Handler) (*http.Response, error) {
-	// read response
-	respBytes, err := HTTPResponseToBytes(r)
-	if err != nil {
-		return nil, err
-	}
-	// itterate tags
-	posOffset := 0
-	for index, esiTag := range esiTags {
-		// assume that sub resps are in same order as esi tags
-		subResp := subResps[index]
-		esiBodyBytes, err := ioutil.ReadAll(subResp.Body)
+		// make sub request for esi data
+		// TODO be smarter about processing the ESI url
+		esiReq, err := http.NewRequest(
+			http.MethodGet,
+			resp.Request.URL.Scheme+"://"+resp.Request.URL.Host+urlAttr,
+			nil,
+		)
 		if err != nil {
 			return nil, err
 		}
-		subResp.Body.Close()
-		// TODO this might could be improved apon
-		// SEE https://github.com/golang/go/wiki/SliceTricks#insert
-		respBytes = append(respBytes[:esiTag.Position+posOffset], append(esiBodyBytes, respBytes[esiTag.Position+posOffset:]...)...)
-		posOffset += len(esiBodyBytes)
+		esiReq = esiReq.WithContext(resp.Request.Context())
+		esiReq.Header = resp.Request.Header
+
+		// perform sub request
+		esiResp, err := subRequestCallback(esiReq)
+		if err != nil {
+			return nil, err
+		}
+		if esiResp == nil {
+			continue
+		}
+
+		// get esi response body
+		esiBodyBytes, err := ioutil.ReadAll(esiResp.Body)
+		if err != nil {
+			return nil, err
+		}
+		esiResp.Body.Close()
+
+		// replace esi tag with esi response
+		origLength := len(respBytes)
+		respBytes = append(
+			respBytes[:match[0]+posOffset],
+			append(
+				esiBodyBytes,
+				respBytes[match[1]+1+posOffset:]...,
+			)...,
+		)
+		posOffset += len(respBytes) - origLength
 	}
-	// rebuild response
-	return HTTPResponseFromBytes(respBytes)
+	// create new output response
+	outputResp, err := HTTPResponseFromBytes(respBytes)
+	return outputResp, err
 }

@@ -2,11 +2,13 @@ package ccache
 
 import (
 	"bytes"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,16 +17,19 @@ import (
 
 // Handler - main cache handler
 type Handler struct {
-	Config     Config
-	CacheItems []Item
-	lastClean  time.Time
-	locked     bool
+	Config             Config
+	CacheItems         []Item
+	lastClean          time.Time
+	locked             bool
+	subRequestCallback func(req *http.Request) (*http.Response, error)
 }
 
 // NewHandler - create new cache handler
-func NewHandler(config Config) *Handler {
-	handler := new(Handler)
-	handler.Config = config
+func NewHandler(config Config, subRequestCallback func(req *http.Request) (*http.Response, error)) Handler {
+	handler := Handler{
+		Config:             config,
+		subRequestCallback: subRequestCallback,
+	}
 	handler.Clear()
 	return handler
 }
@@ -207,8 +212,8 @@ func (b *Handler) Invalidate(r *http.Request) {
 	}
 }
 
-// HandleRequest - called prior to making a request to app
-func (b *Handler) HandleRequest(r *http.Request) (*http.Response, error) {
+// OnRequest - handle incomming request
+func (b *Handler) OnRequest(r *http.Request) (*http.Response, error) {
 	// add header to request for ESI
 	if b.Config.UseESI {
 		r.Header.Add("Surrogate-Capability", "content=ESI/1.0")
@@ -257,13 +262,40 @@ func (b *Handler) HandleRequest(r *http.Request) (*http.Response, error) {
 	return nil, nil
 }
 
-// GetESIResponse - Get cache item response with ESI tags expanded
-func (b *Handler) GetESIResponse(item *Item, subResps []*http.Response) (*http.Response, error) {
-	resp, err := item.GetResponse()
+// OnResponse - handle outgoing response
+func (b *Handler) OnResponse(resp *http.Response) (*http.Response, error) {
+	// need request
+	if resp.Request == nil {
+		return resp, nil
+	}
+	// store response in cache if able
+	cacheItem, err := b.Store(resp)
 	if err != nil {
 		return nil, err
 	}
-	return ExpandESI(resp, item.EsiTags, subResps, b)
+	if cacheItem == nil {
+		return resp, nil
+	}
+	// retrieve stored response for output
+	req := resp.Request
+	resp, err = cacheItem.GetResponse()
+	if err != nil {
+		return nil, err
+	}
+	resp.Request = req
+	// update cache hit count
+	if cacheItem.Hits == 0 {
+		resp.Header.Set("X-Cache", "MISS")
+		resp.Header.Set("X-Cache-Count", "0")
+	} else {
+		resp.Header.Set("X-Cache", "HIT")
+		resp.Header.Set("X-Cache-Count", strconv.Itoa(cacheItem.Hits))
+	}
+	cacheItem.LogAction("fetch", fmt.Sprintf("COUNT = %d", cacheItem.Hits))
+	cacheItem.LastHit = time.Now()
+	cacheItem.Hits++
+	// expand ESI into final response
+	return ExpandESI(resp, b.subRequestCallback)
 }
 
 // Clear - clear all cache items
