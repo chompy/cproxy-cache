@@ -262,14 +262,18 @@ func (b *Handler) OnRequest(req *http.Request) (*http.Response, error) {
 				return nil, err
 			}
 			resp.Request = req
+			// expand esi
+			resp, err = ExpandESI(resp, cacheItem.EsiTags, b.subRequestCallback)
+			if err != nil {
+				return nil, err
+			}
 			// update cache hit count and set cache response headers
 			cacheItem.Hits++
 			cacheItem.LastHit = time.Now()
 			resp.Header.Set("X-Cache", "HIT")
 			resp.Header.Set("X-Cache-Count", strconv.Itoa(cacheItem.Hits))
 			cacheItem.LogAction("fetch", fmt.Sprintf("COUNT = %d", cacheItem.Hits))
-			// return response with ESI tags expanded
-			return ExpandESI(resp, b.subRequestCallback)
+			return resp, nil
 		}
 	}
 	return nil, nil
@@ -296,11 +300,16 @@ func (b *Handler) OnResponse(resp *http.Response) (*http.Response, error) {
 		return nil, err
 	}
 	resp.Request = req
+	// expand esi
+	resp, err = ExpandESI(resp, cacheItem.EsiTags, b.subRequestCallback)
+	if err != nil {
+		return nil, err
+	}
 	// set cache response headers
 	resp.Header.Set("X-Cache", "MISS")
 	resp.Header.Set("X-Cache-Count", "0")
 	// expand ESI into final response
-	return ExpandESI(resp, b.subRequestCallback)
+	return resp, nil
 }
 
 // Clear - clear all cache items

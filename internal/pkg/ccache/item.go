@@ -30,6 +30,7 @@ type Item struct {
 	MaxAge            int32
 	Path              string
 	InvalidateHeaders map[string][]string
+	EsiTags           []EsiTag
 	storage           Storage
 }
 
@@ -72,9 +73,9 @@ func PrivateKeyFromRequest(r *http.Request, config *Config) string {
 }
 
 // ItemFromResponse - create cache item from response
-func ItemFromResponse(r *http.Response, config *Config) (Item, error) {
+func ItemFromResponse(resp *http.Response, config *Config) (Item, error) {
 	// parse cache control header
-	cacheControl, err := cacheobject.ParseResponseCacheControl(r.Header.Get("Cache-Control"))
+	cacheControl, err := cacheobject.ParseResponseCacheControl(resp.Header.Get("Cache-Control"))
 	if err != nil {
 		return Item{}, err
 	}
@@ -88,12 +89,12 @@ func ItemFromResponse(r *http.Response, config *Config) (Item, error) {
 	switch itemType {
 	case CacheItemPublic:
 		{
-			key = PublicKeyFromRequest(r.Request, config)
+			key = PublicKeyFromRequest(resp.Request, config)
 			break
 		}
 	case CacheItemPrivate:
 		{
-			key = PrivateKeyFromRequest(r.Request, config)
+			key = PrivateKeyFromRequest(resp.Request, config)
 			break
 		}
 	default:
@@ -104,7 +105,7 @@ func ItemFromResponse(r *http.Response, config *Config) (Item, error) {
 	// set custom vars (used for BAN/PURGE)
 	invalidateHeaders := map[string][]string{}
 	for _, headerName := range config.InvalidateHeaders {
-		invalidateHeaders[headerName] = r.Header[headerName]
+		invalidateHeaders[headerName] = resp.Header[headerName]
 	}
 	// get cache storage handler
 	if len(config.CacheStorageHandlers) == 0 {
@@ -118,7 +119,7 @@ func ItemFromResponse(r *http.Response, config *Config) (Item, error) {
 	item := Item{
 		Type:              itemType,
 		Key:               key,
-		Path:              r.Request.URL.Path,
+		Path:              resp.Request.URL.Path,
 		Hits:              0,
 		Size:              0,
 		Created:           time.Now(),
@@ -129,8 +130,14 @@ func ItemFromResponse(r *http.Response, config *Config) (Item, error) {
 	item.LogAction("create", "-")
 	// init storage
 	item.storage.Init(key, config)
+	// parse esi
+	resp, esiTags, err := ParseESI(resp)
+	if err != nil {
+		return item, err
+	}
+	item.EsiTags = esiTags
 	// store response
-	err = item.storage.StoreResponse(r)
+	err = item.storage.StoreResponse(resp)
 	if err != nil {
 		return item, err
 	}
