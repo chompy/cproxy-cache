@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"log"
 	"net/http"
 
@@ -10,10 +11,23 @@ import (
 // cacheHandler - cache handler
 var cacheHandler ccache.Handler
 
+// GetName - get name of this extension
+func GetName() string {
+	return "Cproxy-Cache"
+}
+
 // OnLoad - load the extension
-func OnLoad(subRequestCallback func(*http.Request) (*http.Response, error)) error {
-	log.Printf("CACHE :: Init CCache v%.2f", ccache.VersionNo/100.0)
+func OnLoad(subRequestCallback func(*http.Request) (*http.Response, error), rawConfig []byte) error {
+	log.Printf("CACHE :: Init %s v%.2f", GetName(), ccache.VersionNo/100.0)
+	// load config
 	config := ccache.GetDefaultConfig()
+	if rawConfig != nil && len(rawConfig) > 0 {
+		err := json.Unmarshal(rawConfig, &config)
+		if err != nil {
+			return err
+		}
+	}
+	// init cache handler
 	cacheHandler = ccache.NewHandler(config, subRequestCallback)
 	return nil
 }

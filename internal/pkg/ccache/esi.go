@@ -7,7 +7,7 @@ import (
 )
 
 // esiTagRegex - Regex for esi tag
-const esiTagRegex = "<esi:include.*src=\\\"(.*)\\\".*>"
+const esiTagRegex = `(?U)<esi:include.*src=\"(.*)\".*>`
 
 // ExpandESI - take http response and replace esi tags
 func ExpandESI(resp *http.Response, subRequestCallback func(req *http.Request) (*http.Response, error)) (*http.Response, error) {
@@ -71,15 +71,14 @@ func ExpandESI(resp *http.Response, subRequestCallback func(req *http.Request) (
 		esiResp.Body.Close()
 
 		// replace esi tag with esi response
-		origLength := len(respBytes)
 		respBytes = append(
 			respBytes[:match[0]+posOffset],
 			append(
 				esiBodyBytes,
-				respBytes[match[1]+1+posOffset:]...,
+				respBytes[match[1]+posOffset:]...,
 			)...,
 		)
-		posOffset += len(respBytes) - origLength
+		posOffset += -(match[1] - match[0]) + len(esiBodyBytes)
 	}
 	// create new output response
 	outputResp, err := HTTPResponseFromBytes(respBytes)

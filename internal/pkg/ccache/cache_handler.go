@@ -128,8 +128,8 @@ func (b *Handler) clearItemIndex(index int) {
 }
 
 // Invalidate - remove matching items from cache
-func (b *Handler) Invalidate(r *http.Request) {
-	switch r.Method {
+func (b *Handler) Invalidate(req *http.Request) {
+	switch req.Method {
 	case "PURGE", "BAN":
 		{
 			// TODO need debug logging
@@ -147,12 +147,12 @@ func (b *Handler) Invalidate(r *http.Request) {
 			// retrieve ban header key+values
 			invalidateHeaderValues := map[string]string{}
 			for _, key := range b.Config.InvalidateHeaders {
-				reqVal := r.Header.Get(key)
+				reqVal := req.Header.Get(key)
 				switch key {
 				case "Xkey":
 					{
 						if reqVal == "" {
-							reqVal = r.Header.Get("Key")
+							reqVal = req.Header.Get("Key")
 						}
 					}
 				}
@@ -204,7 +204,7 @@ func (b *Handler) Invalidate(r *http.Request) {
 				if hasInvalidate {
 					b.clearItemIndex(index)
 					// check for more invalidations
-					b.Invalidate(r)
+					b.Invalidate(req)
 					return
 				}
 			}
@@ -213,13 +213,13 @@ func (b *Handler) Invalidate(r *http.Request) {
 }
 
 // OnRequest - handle incomming request
-func (b *Handler) OnRequest(r *http.Request) (*http.Response, error) {
+func (b *Handler) OnRequest(req *http.Request) (*http.Response, error) {
 	// add header to request for ESI
 	if b.Config.UseESI {
-		r.Header.Add("Surrogate-Capability", "content=ESI/1.0")
+		req.Header.Add("Surrogate-Capability", "content=ESI/1.0")
 	}
 	// handle request
-	switch r.Method {
+	switch req.Method {
 	case "BAN", "PURGE":
 		{
 			body := ""
@@ -231,19 +231,19 @@ func (b *Handler) OnRequest(r *http.Request) (*http.Response, error) {
 				ProtoMinor:    1,
 				Body:          ioutil.NopCloser(bytes.NewBufferString(body)),
 				ContentLength: int64(len(body)),
-				Request:       r,
+				Request:       req,
 				Header:        make(http.Header, 0),
 			}
 			resp.Header.Set("Content-Type", "text/plain")
 			// ensure valid host
 			// must be localhost, TODO extend this?
-			if r.RemoteAddr != ":0" {
+			if req.RemoteAddr != ":0" {
 				resp.Status = "405 Not Allowed"
 				resp.StatusCode = 405
 				return resp, nil
 			}
 			// invalidate
-			b.Invalidate(r)
+			b.Invalidate(req)
 			return resp, nil
 		}
 	case http.MethodGet:
@@ -251,12 +251,25 @@ func (b *Handler) OnRequest(r *http.Request) (*http.Response, error) {
 			// clean cache
 			b.Clean()
 			// get cache item
-			cacheItem := b.Fetch(r)
+			cacheItem := b.Fetch(req)
 			// none exist, no cache
 			if cacheItem == nil {
 				return nil, nil
 			}
-			return cacheItem.GetResponse()
+			// get response from cache
+			resp, err := cacheItem.GetResponse()
+			if err != nil {
+				return nil, err
+			}
+			resp.Request = req
+			// update cache hit count and set cache response headers
+			cacheItem.Hits++
+			cacheItem.LastHit = time.Now()
+			resp.Header.Set("X-Cache", "HIT")
+			resp.Header.Set("X-Cache-Count", strconv.Itoa(cacheItem.Hits))
+			cacheItem.LogAction("fetch", fmt.Sprintf("COUNT = %d", cacheItem.Hits))
+			// return response with ESI tags expanded
+			return ExpandESI(resp, b.subRequestCallback)
 		}
 	}
 	return nil, nil
@@ -283,17 +296,9 @@ func (b *Handler) OnResponse(resp *http.Response) (*http.Response, error) {
 		return nil, err
 	}
 	resp.Request = req
-	// update cache hit count
-	if cacheItem.Hits == 0 {
-		resp.Header.Set("X-Cache", "MISS")
-		resp.Header.Set("X-Cache-Count", "0")
-	} else {
-		resp.Header.Set("X-Cache", "HIT")
-		resp.Header.Set("X-Cache-Count", strconv.Itoa(cacheItem.Hits))
-	}
-	cacheItem.LogAction("fetch", fmt.Sprintf("COUNT = %d", cacheItem.Hits))
-	cacheItem.LastHit = time.Now()
-	cacheItem.Hits++
+	// set cache response headers
+	resp.Header.Set("X-Cache", "MISS")
+	resp.Header.Set("X-Cache-Count", "0")
 	// expand ESI into final response
 	return ExpandESI(resp, b.subRequestCallback)
 }
