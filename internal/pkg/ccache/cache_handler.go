@@ -1,3 +1,20 @@
+/*
+This file is part of CProxy-Cache.
+
+CProxy-Cache is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+CProxy-Cache is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with CProxy-Cache.  If not, see <https://www.gnu.org/licenses/>.
+*/
+
 package ccache
 
 import (
@@ -72,15 +89,7 @@ func (b *Handler) Store(resp *http.Response) (*Item, error) {
 	if err != nil {
 		return nil, err
 	}
-	// no cache
-	if cacheControl.NoCachePresent || cacheControl.NoStore {
-		return nil, nil
-	}
-	// configured to not cache private responses
-	if cacheControl.PrivatePresent && !b.Config.CachePrivate {
-		return nil, nil
-	}
-	// too large to cache
+	// too large
 	if resp.ContentLength > int64(b.Config.ResponseMaxSize) {
 		return nil, nil
 	}
@@ -89,8 +98,13 @@ func (b *Handler) Store(resp *http.Response) (*Item, error) {
 	if cacheControl.SMaxAge > 0 {
 		cacheMaxAge = int32(cacheControl.SMaxAge)
 	}
-	if cacheMaxAge == 0 {
-		return nil, nil
+	// no cache
+	if cacheControl.NoCachePresent || cacheControl.NoStore {
+		cacheMaxAge = 0
+	}
+	// configured to not cache private responses
+	if cacheControl.PrivatePresent && !b.Config.CachePrivate {
+		cacheMaxAge = 0
 	}
 	// already exists?
 	cacheItem := b.Fetch(resp.Request)
